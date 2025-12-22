@@ -1,0 +1,14 @@
+[project]
+name = "900s"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "curl-cffi>=0.14.0",
+    "parsel>=1.10.0",
+    "pikepdf>=10.0.3",
+    "pydantic>=2.12.5",
+    "pymupdf>=1.26.7",
+    "ttkbootstrap>=1.19.2",
+]
