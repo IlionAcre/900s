@@ -1,0 +1,46 @@
+name: Build macOS app (PyInstaller)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project + PyInstaller
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -e .
+          python -m pip install pyinstaller
+
+      - name: Build .app
+        run: |
+          pyinstaller \
+            --noconfirm \
+            --clean \
+            --windowed \
+            --name "900s Scraper" \
+            --hidden-import=_cffi_backend \
+            --collect-all curl_cffi \
+            main.py
+
+      - name: Zip the .app (for artifact upload)
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "dist/900s Scraper.app" "900s_Scraper_macOS.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 900s_Scraper_macOS
+          path: 900s_Scraper_macOS.zip
