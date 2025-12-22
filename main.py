@@ -104,7 +104,42 @@ def _read_queries_file(path: Path) -> List[str]:
     return out
 
 
-def _append_rows_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
+
+def build_preferred_column_order(
+    *,
+    historical_cols: List[str],
+    rows: List[Dict[str, Any]],
+) -> List[str]:
+    """
+    Build a deterministic column order that guarantees historical columns
+    appear first (preserving the given order), followed by any remaining
+    columns in first-seen order across the provided rows.
+
+    This is used to keep CSV headers stable and human-friendly.
+    """
+    ordered: List[str] = []
+    seen: set[str] = set()
+
+    for c in historical_cols or []:
+        if c and c not in seen:
+            seen.add(c)
+            ordered.append(c)
+
+    for r in rows:
+        for k in r.keys():
+            if k not in seen:
+                seen.add(k)
+                ordered.append(k)
+
+    return ordered
+
+
+def _append_rows_csv(
+    path: Path,
+    rows: List[Dict[str, Any]],
+    *,
+    preferred_columns: List[str] | None = None,
+) -> None:
     """
     Append rows to CSV.
     - If file doesn't exist or is empty: write header first.
@@ -130,8 +165,21 @@ def _append_rows_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         except Exception:
             existing_header = []
 
-    incoming_cols = sorted({k for r in rows for k in r.keys()})
-    all_cols = sorted(set(existing_header) | set(incoming_cols))
+    incoming_cols = {k for r in rows for k in r.keys()}
+
+    # If a preferred order is provided, honor it (historical columns first),
+    # then append any remaining columns deterministically.
+    if preferred_columns:
+        all_cols: List[str] = [c for c in preferred_columns if c in incoming_cols or c in existing_header]
+        for c in list(existing_header) + sorted(incoming_cols):
+            if c not in all_cols:
+                all_cols.append(c)
+    else:
+        all_cols = list(existing_header)
+        for c in sorted(incoming_cols):
+            if c not in all_cols:
+                all_cols.append(c)
+
 
     write_header = (not file_exists) or (path.stat().st_size == 0) or (not existing_header)
 
@@ -164,11 +212,12 @@ async def run_one_query_to_row(
     *,
     query: str,
     output_dir: Path,
-) -> Tuple[Dict[str, Any], str]:
+) -> Tuple[Dict[str, Any], str, List[str]]:
     """
     Run pipeline for ONE query and return:
       - combined_row
       - filing_type: "990" or "990-PF"
+      - hist_columns: ordered list of historical-data columns (for stable CSV headers)
     """
     results = await scrape_search(query, max_pages=1, delay_s=0.0)
     if not results:
@@ -193,6 +242,7 @@ async def run_one_query_to_row(
         html_text = await _fetch_text(session, org_url)
 
         hist_row, _hist_meta = parse_historical_data_from_html_text(html_text)
+        hist_columns = list(_hist_meta.get("columns", tuple(hist_row.keys())))
 
         xml_href = extract_xml_link_from_html_text(html_text)
         xml_url = urljoin(BASE, xml_href)
@@ -229,7 +279,7 @@ async def run_one_query_to_row(
             },
             combined,
         )
-        return combined, filing_type
+        return combined, filing_type, hist_columns
     finally:
         try:
             tmp_xml_path.unlink(missing_ok=True)
@@ -517,13 +567,14 @@ class App(tb.Frame):
             return 0.0
 
     async def _run_single(self, *, query: str, output_dir: Path) -> Tuple[Path, str]:
-        row, filing_type = await run_one_query_to_row(query=query, output_dir=output_dir)
+        row, filing_type, hist_columns = await run_one_query_to_row(query=query, output_dir=output_dir)
 
         stem = _sanitize_filename_stem(query)
         filename = f"{stem}_990pf.csv" if filing_type == "990-PF" else f"{stem}_990.csv"
         csv_path = output_dir / filename
 
-        _append_rows_csv(csv_path, [row])  # APPEND
+        preferred_cols = build_preferred_column_order(historical_cols=hist_columns, rows=[row])
+        _append_rows_csv(csv_path, [row], preferred_columns=preferred_cols)  # APPEND
         return csv_path, filing_type
 
     async def _run_multi(
@@ -538,11 +589,14 @@ class App(tb.Frame):
 
         rows_990: List[Dict[str, Any]] = []
         rows_990pf: List[Dict[str, Any]] = []
+        hist_columns_first: List[str] = []
 
         for i, q in enumerate(queries, start=1):
             self.master.after(0, lambda q=q, i=i, n=len(queries): self.var_status.set(f"Working... ({i}/{n}) {q}"))
 
-            row, filing_type = await run_one_query_to_row(query=q, output_dir=output_dir)
+            row, filing_type, hist_columns = await run_one_query_to_row(query=q, output_dir=output_dir)
+            if not hist_columns_first and hist_columns:
+                hist_columns_first = hist_columns
 
             if filing_type == "990-PF":
                 rows_990pf.append(row)
@@ -557,9 +611,14 @@ class App(tb.Frame):
         csv_990 = output_dir / f"{stem}_990.csv"
         csv_990pf = output_dir / f"{stem}_990pf.csv"
 
+        preferred_cols = build_preferred_column_order(
+            historical_cols=hist_columns_first,
+            rows=rows_990 + rows_990pf,
+        )
+
         # APPEND
-        _append_rows_csv(csv_990, rows_990)
-        _append_rows_csv(csv_990pf, rows_990pf)
+        _append_rows_csv(csv_990, rows_990, preferred_columns=preferred_cols)
+        _append_rows_csv(csv_990pf, rows_990pf, preferred_columns=preferred_cols)
 
         return csv_990, csv_990pf
 
