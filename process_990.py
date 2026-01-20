@@ -3,10 +3,11 @@ from __future__ import annotations
 import csv
 import json
 import re
+from io import BytesIO
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from lxml import etree
 
@@ -486,6 +487,185 @@ def parse_990(
     }
     return normalized, meta
 
+
+# Backwards-compat / typo-friendly alias (some scripts might refer to 900 by mistake)
+def parse_900_main(xml_path: Path) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    return parse_990_main(xml_path)
+
+
+
+
+# ============================================================
+# MAIN-ONLY (REFINED) 990 PARSER
+#   - Keeps ReturnHeader + ReturnData/IRS990
+#   - Drops all IRS990Schedule* content
+#   - Drops anything under repeating *Grp / *Group nodes that repeat
+#   - No attributes
+# ============================================================
+
+_GROUP_TAG_SUFFIXES: Tuple[str, ...] = ("Grp", "Group")
+
+
+def _strip_preamble_bytes(raw: bytes) -> bytes:
+    """Remove any junk bytes before the first <?xml ...?> declaration."""
+    i = raw.find(b"<?xml")
+    return raw[i:] if i > 0 else raw
+
+
+def _is_group_tag(tag: str) -> bool:
+    return any(tag.endswith(suf) for suf in _GROUP_TAG_SUFFIXES)
+
+
+def _is_main_990_path(path: str) -> bool:
+    """
+    Decide whether an XML *leaf path* belongs to the "main" 990 content.
+
+    We keep:
+      - /Return/ReturnHeader/...
+      - /Return/ReturnData/IRS990/...
+
+    We drop:
+      - Anything containing an IRS990Schedule* segment
+    """
+    if path.startswith("/Return/ReturnHeader/"):
+        return True
+
+    if path.startswith("/Return/ReturnData/IRS990/"):
+        # Exclude schedules (sometimes embedded or referenced)
+        segs = split_full_path(path)
+        if any(seg.startswith("IRS990Schedule") for seg in segs):
+            return False
+        return True
+
+    return False
+
+
+def build_main_schema_990(xml_path: Path) -> List[Dict[str, str]]:
+    """
+    Build a compact schema of "main" leaf paths for Form 990.
+
+    Output rows:
+      - {"column_name": <human label>, "xml_path": </Return/.../>}
+
+    This mimics the strategy used in process_990PF:
+      - discover leaf paths
+      - remove anything under repeating group nodes (*Grp / *Group that repeat)
+      - exclude schedules
+    """
+    raw = _strip_preamble_bytes(xml_path.read_bytes())
+    bio = BytesIO(raw)
+
+    stack: List[str] = []
+    leaf_paths: Set[str] = set()
+    repeat_counter: Dict[Tuple[str, str], int] = {}
+
+    for event, elem in etree.iterparse(
+        bio,
+        events=("start", "end"),
+        recover=True,
+        huge_tree=True,
+        remove_blank_text=True,
+    ):
+        if not isinstance(elem.tag, str):
+            continue
+
+        if event == "start":
+            tag = local_name(elem.tag)
+            parent = "/" + "/".join(stack) if stack else ""
+            repeat_counter[(parent, tag)] = repeat_counter.get((parent, tag), 0) + 1
+            stack.append(tag)
+
+        else:
+            # leaf node = no element children
+            if not any(isinstance(c.tag, str) for c in elem):
+                p = "/" + "/".join(stack)
+                if _is_main_990_path(p):
+                    leaf_paths.add(p)
+
+            stack.pop()
+            elem.clear()
+
+    # Identify repeating group containers
+    group_paths = {
+        f"{p}/{t}" if p else f"/{t}"
+        for (p, t), c in repeat_counter.items()
+        if c > 1 and _is_group_tag(t)
+    }
+
+    def under_group(p: str) -> bool:
+        return any(p.startswith(g + "/") for g in group_paths)
+
+    main_paths = sorted(p for p in leaf_paths if not under_group(p))
+
+    # Create stable, collision-safe labels using existing naming logic
+    dummy = {p: "" for p in main_paths}
+    xml_to_col = build_column_name_map(dummy)
+
+    return [{"column_name": xml_to_col[p], "xml_path": p} for p in main_paths]
+
+
+def extract_main_row_990(xml_path: Path, schema_rows: List[Dict[str, str]]) -> Dict[str, str]:
+    """Extract only the values described by the main schema."""
+    raw = _strip_preamble_bytes(xml_path.read_bytes())
+    root = etree.fromstring(raw, etree.XMLParser(recover=True, huge_tree=True))
+
+    path_to_col = {r["xml_path"]: r["column_name"] for r in schema_rows}
+    values: defaultdict[str, List[str]] = defaultdict(list)
+
+    def walk(elem: etree._Element, path: List[str]) -> None:
+        if not isinstance(elem.tag, str):
+            return
+
+        tag = local_name(elem.tag)
+        cur_path = "/" + "/".join(path + [tag])
+
+        if cur_path in path_to_col:
+            txt = (elem.text or "").strip()
+            if txt:
+                values[path_to_col[cur_path]].append(txt)
+
+        for child in elem:
+            if isinstance(child.tag, str):
+                walk(child, path + [tag])
+
+    walk(root, [])
+
+    return {k: " | ".join(v) for k, v in values.items()}
+
+
+def parse_990_main(xml_path: Path) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    """
+    PURE FUNCTION.
+
+    Compact Form 990 parser:
+      - Only "main" (ReturnHeader + IRS990) leaf fields
+      - No schedules
+      - No repeating-group explosions
+
+    Returns:
+      - row: {column_name: value}
+      - meta: {
+          "column_map": {column_name: xml_path},
+          "xml_to_column": {xml_path: column_name},
+          "columns": tuple[str, ...],
+          "schema": list[dict[str, str]],
+        }
+
+    No file writing. No printing.
+    """
+    schema = build_main_schema_990(xml_path)
+    row = extract_main_row_990(xml_path, schema)
+
+    columns = tuple(r["column_name"] for r in schema)
+    normalized = normalize_row_to_columns(row, columns)
+
+    meta: Dict[str, Any] = {
+        "column_map": {r["column_name"]: r["xml_path"] for r in schema},
+        "xml_to_column": {r["xml_path"]: r["column_name"] for r in schema},
+        "columns": columns,
+        "schema": schema,
+    }
+    return normalized, meta
 
 
 # ============================================================

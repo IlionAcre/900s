@@ -1,10 +1,91 @@
-# Python-generated files
+# Python
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
 wheels/
-*.egg-info
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
 # Virtual environments
-.venv
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Data files - keep only queries.txt as example
+data/
+cleaned/
+filtered_out/
+app/
+test/
+*.csv
+*.xls
+*.xlsx
+!queries.txt
+queries2.txt
+queries copy.txt
+*.xml
+*.rar
+*.log
+*.json
+
+# Unused Python files (old/alternative implementations)
+scraper.py
+scraper_900s.py
+scrape.py
+429.py
+cleaner.py
+cleaner_pf.py
+combine.py
+dedup.py
+dedup_debug.py
+filter.py
+filter_fix.py
+filter_raw.py
+filter_raw_short.py
+filter_really_small.py
+find_err.py
+process_990_updated.py
+split.py
+spotter.py
+
+# Output files
+results*.csv
+results*.txt
+ACLU*.txt
+input_query_matches.txt
+missing_orgs.txt
+preview_extracted.json
+cleaning_summaries.json
+check_missing_orgs.log
+cleaning_run.log
+dedup_and_print_T.log
+results_error*.txt
+mala.xml
+
+# Temporary files
+*.tmp
+__tmp_*

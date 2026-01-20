@@ -218,6 +218,8 @@ def dump_search_html(q: str, out_html: str = "search.html") -> str:
     return out_html
 
 
+
+
 if __name__ == "__main__":
     main()
     # path = dump_search_html("Gates", "gates_search.html")

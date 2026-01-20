@@ -6,11 +6,14 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "curl-cffi>=0.14.0",
+    "numpy>=2.4.0",
+    "pandas>=2.3.3",
     "parsel>=1.10.0",
     "pikepdf>=10.0.3",
     "pydantic>=2.12.5",
     "pymupdf>=1.26.7",
     "ttkbootstrap>=1.19.2",
+    "xlrd>=2.0.2",
 ]
 [tool.setuptools]
 py-modules = [
