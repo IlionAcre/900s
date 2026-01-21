@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import csv
+import json
 import re
 import threading
 from datetime import datetime
@@ -357,7 +358,12 @@ class App(tb.Frame):
         self.var_multi_base_name = tk.StringVar(value="results")  # stem only
         self.var_wait_seconds = tk.StringVar(value="0")  # wait between queries (default: 0)
         self.var_batch_size = tk.StringVar(value="50")  # queries per batch
-        self.var_batch_wait_minutes = tk.StringVar(value="1.02")  # 61 seconds = ~1.02 min
+        self.var_batch_wait_minutes = tk.StringVar(value="1")  # 60 seconds between batches
+
+        # proxy settings
+        self.var_proxy_url = tk.StringVar(value="")  # Proxy URL (empty = not set)
+        self.var_use_proxy = tk.BooleanVar(value=False)  # "Use Proxy" checkbox
+        self.var_force_proxy = tk.BooleanVar(value=False)  # "Force Proxy" checkbox
 
         # export options (shared)
         self.var_export_full = tk.BooleanVar(value=False)  # Default: cleaned only
@@ -368,7 +374,149 @@ class App(tb.Frame):
         self._stop_btn: tb.Button | None = None
         self._stop_requested: bool = False
 
+        # Request rate tracking (non-proxy requests per hour)
+        self._direct_request_count: int = 0
+        self._direct_request_window_start: datetime | None = None
+        self.var_request_counter = tk.StringVar(value="Direct: 0/50")
+
+        # Config file path
+        self._config_file = self.project_root / "config.json"
+        self._load_config()
+
         self._build_ui()
+
+        # Save config when window closes
+        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _load_config(self) -> None:
+        """Load saved configuration from config.json if it exists."""
+        if self._config_file.exists():
+            try:
+                with open(self._config_file, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                # Restore values
+                if "output_dir" in cfg:
+                    self.var_output_dir.set(cfg["output_dir"])
+                if "queries_file" in cfg:
+                    self.var_queries_file.set(cfg["queries_file"])
+                if "base_name" in cfg:
+                    self.var_multi_base_name.set(cfg["base_name"])
+                if "wait_seconds" in cfg:
+                    self.var_wait_seconds.set(cfg["wait_seconds"])
+                if "batch_size" in cfg:
+                    self.var_batch_size.set(cfg["batch_size"])
+                if "batch_wait_minutes" in cfg:
+                    self.var_batch_wait_minutes.set(cfg["batch_wait_minutes"])
+                if "proxy_url" in cfg:
+                    self.var_proxy_url.set(cfg["proxy_url"])
+                if "use_proxy" in cfg:
+                    self.var_use_proxy.set(cfg["use_proxy"])
+                if "force_proxy" in cfg:
+                    self.var_force_proxy.set(cfg["force_proxy"])
+                if "export_full" in cfg:
+                    self.var_export_full.set(cfg["export_full"])
+                if "report_name" in cfg:
+                    self.var_report_name.set(cfg["report_name"])
+                # Load request tracking
+                if "direct_request_count" in cfg:
+                    self._direct_request_count = cfg["direct_request_count"]
+                if "direct_request_window_start" in cfg and cfg["direct_request_window_start"]:
+                    try:
+                        self._direct_request_window_start = datetime.fromisoformat(cfg["direct_request_window_start"])
+                    except Exception:
+                        self._direct_request_window_start = None
+                # Check if window has expired and reset
+                self._check_and_reset_request_window()
+            except Exception:
+                pass  # Ignore config load errors
+
+    def _save_config(self) -> None:
+        """Save current configuration to config.json."""
+        cfg = {
+            "output_dir": self.var_output_dir.get(),
+            "queries_file": self.var_queries_file.get(),
+            "base_name": self.var_multi_base_name.get(),
+            "wait_seconds": self.var_wait_seconds.get(),
+            "batch_size": self.var_batch_size.get(),
+            "batch_wait_minutes": self.var_batch_wait_minutes.get(),
+            "proxy_url": self.var_proxy_url.get(),
+            "use_proxy": self.var_use_proxy.get(),
+            "force_proxy": self.var_force_proxy.get(),
+            "export_full": self.var_export_full.get(),
+            "report_name": self.var_report_name.get(),
+            # Request tracking
+            "direct_request_count": self._direct_request_count,
+            "direct_request_window_start": self._direct_request_window_start.isoformat() if self._direct_request_window_start else None,
+        }
+        try:
+            with open(self._config_file, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception:
+            pass  # Ignore config save errors
+
+    def _on_close(self) -> None:
+        """Called when window is closed. Save config and exit."""
+        self._save_config()
+        self.master.destroy()
+
+    def _check_and_reset_request_window(self) -> None:
+        """Check if the request window (1 hour) has expired and reset if needed."""
+        if self._direct_request_window_start is None:
+            self._direct_request_count = 0
+            self._update_request_counter_display()
+            return
+
+        now = datetime.now()
+        elapsed = (now - self._direct_request_window_start).total_seconds()
+        if elapsed >= 3600:  # 1 hour = 3600 seconds
+            # Window expired, reset
+            self._direct_request_count = 0
+            self._direct_request_window_start = None
+        self._update_request_counter_display()
+
+    def _update_request_counter_display(self) -> None:
+        """Update the UI display of the request counter."""
+        count = self._direct_request_count
+        try:
+            limit = int(self.var_batch_size.get())
+        except (ValueError, AttributeError):
+            limit = 50
+        if self._direct_request_window_start:
+            now = datetime.now()
+            elapsed = (now - self._direct_request_window_start).total_seconds()
+            remaining = max(0, 3600 - elapsed)
+            if remaining > 0:
+                mins = int(remaining // 60)
+                self.var_request_counter.set(f"Direct: {count}/{limit} (resets in {mins}m)")
+            else:
+                self.var_request_counter.set(f"Direct: {count}/{limit}")
+        else:
+            self.var_request_counter.set(f"Direct: {count}/{limit}")
+
+    def _increment_direct_request(self) -> None:
+        """Increment the direct request counter and start window if needed."""
+        if self._direct_request_window_start is None:
+            self._direct_request_window_start = datetime.now()
+        self._direct_request_count += 1
+        self._update_request_counter_display()
+        self._save_config()  # Persist immediately
+
+    def _get_remaining_window_seconds(self) -> float:
+        """Get seconds remaining until the request window resets."""
+        if self._direct_request_window_start is None:
+            return 0
+        now = datetime.now()
+        elapsed = (now - self._direct_request_window_start).total_seconds()
+        return max(0, 3600 - elapsed)
+
+    def _should_use_proxy_due_to_limit(self) -> bool:
+        """Check if we've hit the direct request limit and should use proxy."""
+        self._check_and_reset_request_window()
+        try:
+            limit = int(self.var_batch_size.get())
+        except (ValueError, AttributeError):
+            limit = 50
+        return self._direct_request_count >= limit
 
     def _build_ui(self) -> None:
         self.master.title("Nonprofit Filing Exporter")
@@ -542,11 +690,45 @@ class App(tb.Frame):
         tb.Entry(row_report, textvariable=self.var_report_name).pack(side=LEFT, fill=X, expand=True)
         tb.Label(row_report, text="(summary file with date)", bootstyle="secondary").pack(side=LEFT, padx=(8, 0))
 
+        # Proxy section (shared - visible in both modes)
+        card_proxy = tb.Labelframe(self, text="Proxy (Optional)", padding=14)
+        card_proxy.pack(fill=X, pady=(12, 0))
+
+        row_proxy_url = tb.Frame(card_proxy)
+        row_proxy_url.pack(fill=X, pady=(0, 8))
+        tb.Label(row_proxy_url, text="Proxy URL", width=10).pack(side=LEFT, padx=(0, 10))
+        tb.Entry(row_proxy_url, textvariable=self.var_proxy_url).pack(side=LEFT, fill=X, expand=True)
+
+        row_proxy_check = tb.Frame(card_proxy)
+        row_proxy_check.pack(fill=X)
+        tb.Checkbutton(
+            row_proxy_check,
+            text="Use Proxy (Auto-switch on limit/429)",
+            variable=self.var_use_proxy,
+            bootstyle="round-toggle",
+        ).pack(side=LEFT, padx=(0, 15))
+
+        tb.Checkbutton(
+            row_proxy_check,
+            text="Force Proxy (Always)",
+            variable=self.var_force_proxy,
+            bootstyle="round-toggle",
+        ).pack(side=LEFT)
+
+        tb.Label(
+            card_proxy,
+            text="Use Proxy: Starts direct, switches on limit/429. Force Proxy: Always uses proxy.",
+            bootstyle="secondary",
+        ).pack(anchor="w", pady=(8, 0))
+
         # Bottom bar
         bottom = tb.Frame(self)
         bottom.pack(fill=X, pady=(16, 0))
 
         tb.Label(bottom, textvariable=self.var_status, bootstyle="secondary").pack(side=LEFT)
+
+        # Request counter display
+        tb.Label(bottom, textvariable=self.var_request_counter, bootstyle="info").pack(side=LEFT, padx=(20, 0))
 
         self._run_btn = tb.Button(bottom, text="Run", bootstyle="primary", width=12, command=self.on_run)
         self._run_btn.pack(side=RIGHT)
@@ -604,6 +786,18 @@ class App(tb.Frame):
             self._stop_btn.configure(state="disabled")
 
     def on_run(self) -> None:
+        # 1. Validate Proxy Settings
+        use_proxy = self.var_use_proxy.get()
+        force_proxy = self.var_force_proxy.get()
+        proxy_url = self.var_proxy_url.get().strip()
+        
+        if (use_proxy or force_proxy) and not proxy_url:
+            messagebox.showerror(
+                "Proxy URL Missing",
+                "You have enabled proxy features ('Use Proxy' or 'Force Proxy') but haven't provided a Proxy URL.\n\nPlease enter a valid Proxy URL or disable proxy options."
+            )
+            return
+
         settings = self._collect_settings()
 
         if settings["mode"] == "single":
@@ -670,7 +864,112 @@ class App(tb.Frame):
             return 0.0
 
     async def _run_single(self, *, query: str, output_dir: Path, export_full: bool) -> Tuple[Path, str]:
-        row, filing_type, hist_columns = await run_one_query_to_row(query=query, output_dir=output_dir)
+        # Check request limit and decide on proxy
+        self._check_and_reset_request_window()
+        limit_reached = self._should_use_proxy_due_to_limit()
+        force_proxy_enabled = self.var_force_proxy.get()
+
+        # Proxy settings
+        proxy_url = self.var_proxy_url.get().strip() or None
+        use_proxy_enabled = self.var_use_proxy.get() and proxy_url is not None
+        
+        # Decide if we start with proxy
+        proxy_active = False
+        if force_proxy_enabled and proxy_url:
+            proxy_active = True
+        elif limit_reached and use_proxy_enabled:
+            proxy_active = True
+            
+        # If we need proxy (limit reached or force) but don't have it enabled/URL, we might need to wait
+        if (limit_reached and not use_proxy_enabled) and not proxy_active:
+            # No proxy available, need to wait
+            remaining = self._get_remaining_window_seconds()
+            if remaining > 0:
+                self.master.after(0, lambda r=remaining: self.var_status.set(
+                    f"Rate limit. Waiting {int(remaining//60)}m {int(remaining%60)}s..."
+                ))
+                await self._interruptible_sleep(
+                    remaining,
+                    "Rate limit. Waiting {remaining}...",
+                    check_interval=1.0,
+                )
+                self._check_and_reset_request_window()
+
+        row = None
+        filing_type = None
+        hist_columns = []
+        max_attempts = 3
+        consecutive_direct_429s = 0
+
+        for attempt in range(1, max_attempts + 1):
+            session_kwargs = {
+                "impersonate": "chrome",
+                "timeout": 60,
+                "headers": DEFAULT_HEADERS,
+            }
+            if proxy_active and proxy_url:
+                session_kwargs["proxy"] = proxy_url
+
+            try:
+                async with AsyncSession(**session_kwargs) as session:
+                    gate = RateLimitGate()
+                    result = await run_one_query_to_row(
+                        query=query, output_dir=output_dir, session=session, gate=gate
+                    )
+                    if result is None:
+                        raise RuntimeError("No results found")
+                    row, filing_type, hist_columns = result
+                    # Increment counter if this was a direct request
+                    if not proxy_active:
+                        self._increment_direct_request()
+                    break  # Success
+            except Exception as e:
+                err_str = str(e).lower()
+                if "429" in err_str or "rate limit" in err_str or "too many requests" in err_str:
+                    # Update consecutive 429s for non-proxy
+                    if not proxy_active:
+                        consecutive_direct_429s += 1
+                        
+                    # 3 consecutive 429s logic
+                    if not proxy_active and consecutive_direct_429s >= 3:
+                        if use_proxy_enabled:
+                            # Force switch to proxy
+                            proxy_active = True
+                            self.master.after(0, lambda: self.var_status.set(
+                                "⚠️ 3x 429 Errors! Switching to proxy..."
+                            ))
+                            continue # Retry with proxy immediately
+                        else:
+                            # No proxy available, wait 1 hour
+                            self.master.after(0, lambda: self.var_status.set(
+                                "⚠️ 3x 429 Errors! Waiting 1 hour..."
+                            ))
+                            await self._interruptible_sleep(
+                                3600,
+                                "Rate limit. Waiting {remaining}...",
+                                check_interval=1.0,
+                            )
+                            consecutive_direct_429s = 0 # Reset after wait
+                            continue # Retry same request
+                            
+                    # Got 429 - switch to proxy if enabled (standard check)
+                    if use_proxy_enabled and not proxy_active:
+                        proxy_active = True
+                        self.master.after(0, lambda: self.var_status.set(
+                            "⚠️ 429 Error! Switching to proxy..."
+                        ))
+                        continue  # Retry with proxy immediately (no wait)
+                        
+                    elif attempt < max_attempts:
+                        # Retry immediately (User requested no wait)
+                        self.master.after(0, lambda a=attempt, m=max_attempts: self.var_status.set(
+                            f"⚠️ 429 Error! Retrying ({a}/{m})..."
+                        ))
+                        continue
+                raise  # Re-raise on final attempt or non-429 error
+
+        if row is None:
+            raise RuntimeError("Query failed after all attempts")
 
         stem = _sanitize_filename_stem(query)
         # Full file (uncleaned)
@@ -759,46 +1058,105 @@ class App(tb.Frame):
         ip_rate_limited = False  # Flag to break out and save
         stopped = False  # Track if user stopped
 
-        # Process queries in batches, each batch gets a fresh session
+        # Check request limit at start
+        self._check_and_reset_request_window()
+        
+        # Proxy settings - start direct, switch to proxy on first 429 or limit
+        proxy_url = self.var_proxy_url.get().strip() or None
+        use_proxy_enabled = self.var_use_proxy.get() and proxy_url is not None
+        force_proxy_enabled = self.var_force_proxy.get()
+        
+        # Decide if we start with proxy
+        proxy_active = False
+        limit_reached = self._should_use_proxy_due_to_limit()
+        
+        if force_proxy_enabled and proxy_url:
+            proxy_active = True
+            
+        elif limit_reached:
+            if use_proxy_enabled:
+                proxy_active = True  # Start with proxy since limit reached
+                self.master.after(0, lambda: self.var_status.set(
+                    "Direct limit reached. Starting with proxy..."
+                ))
+            else:
+                # No proxy, wait for window reset
+                remaining = self._get_remaining_window_seconds()
+                if remaining > 0:
+                    self.master.after(0, lambda r=remaining: self.var_status.set(
+                        f"Rate limit. Waiting {int(r//60)}m..."
+                    ))
+                    import asyncio
+                    await asyncio.sleep(remaining)
+                    self._check_and_reset_request_window()
+                proxy_active = False
+        
+        proxy_disabled = False  # Set to True after 5 consecutive 429s with proxy
+        proxy_consecutive_429s = 0  # Track 429s specifically when using proxy
+        consecutive_direct_429s = 0  # Track 3x 429s on direct connection
+
+        # Process queries with dynamic session management
         total_queries = len(queries)
         processed_count = 0
+        query_idx = 0  # Current position in queries list
+        batch_num = 0
 
-        # Calculate batch boundaries
-        batch_starts = list(range(0, total_queries, batch_size))
-
-        for batch_idx, batch_start in enumerate(batch_starts):
+        while query_idx < total_queries:
             if ip_rate_limited or stopped or self._stop_requested:
                 if self._stop_requested:
                     stopped = True
                 break
 
-            batch_end = min(batch_start + batch_size, total_queries)
-            batch_queries = queries[batch_start:batch_end]
-            batch_num = batch_idx + 1
-            total_batches = len(batch_starts)
+            batch_num += 1
+            
+            # Check limit before starting batch
+            if not proxy_active and use_proxy_enabled and not proxy_disabled:
+                if self._should_use_proxy_due_to_limit():
+                    proxy_active = True
+                    self.master.after(0, lambda: self.var_status.set(
+                        "Direct limit reached. Switching to proxy..."
+                    ))
 
             # Show batch start message
-            self.master.after(0, lambda b=batch_num, t=total_batches: self.var_status.set(
-                f"Starting batch {b}/{t}... (new session)"
+            session_type = "proxy" if proxy_active else "direct"
+            self.master.after(0, lambda b=batch_num, s=session_type: self.var_status.set(
+                f"Starting batch {b}... ({s} session)"
             ))
 
             # Create a fresh session and gate for this batch
             gate = RateLimitGate()
+            session_kwargs = {
+                "impersonate": "chrome",
+                "timeout": 60,
+                "headers": DEFAULT_HEADERS,
+            }
+            if proxy_active and proxy_url:
+                session_kwargs["proxy"] = proxy_url
 
-            async with AsyncSession(
-                impersonate="chrome",
-                timeout=60,
-                headers=DEFAULT_HEADERS,
-            ) as session:
-                for j, q in enumerate(batch_queries):
-                    # Check stop flag at start of each query
+            queries_in_batch = 0
+            need_new_session = False
+            
+            async with AsyncSession(**session_kwargs) as session:
+                while query_idx < total_queries and queries_in_batch < batch_size:
+                    # Check stop flag
                     if self._stop_requested:
                         stopped = True
                         break
                     if ip_rate_limited:
                         break
 
-                    i = batch_start + j + 1  # Overall query index (1-based)
+                    # Check if we need to switch to proxy mid-batch
+                    if not proxy_active and use_proxy_enabled and not proxy_disabled:
+                        if self._should_use_proxy_due_to_limit():
+                            proxy_active = True
+                            self.master.after(0, lambda: self.var_status.set(
+                                "Direct limit reached. Switching to proxy..."
+                            ))
+                            need_new_session = True
+                            break  # Exit to create new session with proxy
+
+                    q = queries[query_idx]
+                    i = query_idx + 1  # 1-based index for display
                     self.master.after(0, lambda q=q, i=i, n=total_queries: self.var_status.set(
                         f"Working... ({i}/{n}) {q}"
                     ))
@@ -832,10 +1190,70 @@ class App(tb.Frame):
                         consecutive_429s += 1
                         results_log.append((q, "rate_limited", str(last_error)))
                         count_errors += 1
+                        
+                        # Use force proxy if not active but enabled (3x consecutive non-proxy 429s)
+                        if not proxy_active:
+                            consecutive_direct_429s += 1
+                            if consecutive_direct_429s >= 3:
+                                if use_proxy_enabled and not proxy_disabled:
+                                    # Switch to proxy immediately
+                                    proxy_active = True
+                                    need_new_session = True
+                                    self.master.after(0, lambda: self.var_status.set(
+                                        "⚠️ 3x 429 Errors! Switching to proxy..."
+                                    ))
+                                    break # Break inner loop to get new session
+                                else:
+                                    # No proxy available - Wait 1 hour
+                                    self.master.after(0, lambda: self.var_status.set(
+                                        "⚠️ 3x 429 Errors! Waiting 1 hour..."
+                                    ))
+                                    # Wait 1 hour
+                                    await self._interruptible_sleep(
+                                        3600,
+                                        "Rate limit. Waiting {remaining}...",
+                                        check_interval=1.0,
+                                    )
+                                    consecutive_direct_429s = 0
+                                    consecutive_429s = 0
+                                    # Retry same query (decrement counters so loop retries it)
+                                    processed_count -= 1
+                                    query_idx -= 1
+                                    queries_in_batch -= 1
+                                    continue
 
-                        if consecutive_429s >= 2:
-                            # Two consecutive 429s = IP rate limited, save what we have and abort
-                            ip_rate_limited = True
+                        # If proxy is enabled but not active, activate it now (Standard 1x check)
+                        if use_proxy_enabled and not proxy_active and not proxy_disabled:
+                            proxy_active = True
+                            need_new_session = True
+                            self.master.after(0, lambda: self.var_status.set(
+                                "⚠️ 429 Error! Switching to proxy..."
+                            ))
+                            # Don't count this as error, just switch to proxy session
+                            break
+
+                        if proxy_active:
+                            # When proxy is active, track proxy-specific 429s
+                            proxy_consecutive_429s += 1
+                            if proxy_consecutive_429s >= 5:
+                                # Disable proxy after 5 consecutive 429s
+                                proxy_disabled = True
+                                self.master.after(0, lambda: self.var_use_proxy.set(False))
+                                self.master.after(0, lambda: self.var_status.set(
+                                    "❌ Proxy failed 5 times! Disabling..."
+                                ))
+                                # Apply batch wait as fallback
+                                if batch_wait_seconds > 0:
+                                    await self._interruptible_sleep(
+                                        batch_wait_seconds,
+                                        f"Proxy disabled. Waiting {{remaining}}...",
+                                        check_interval=1.0,
+                                    )
+                            # With proxy, don't abort - just retry with rotation
+                        else:
+                            # Without proxy, abort after 2 consecutive 429s
+                            if consecutive_429s >= 2:
+                                ip_rate_limited = True
                     elif last_error:
                         # Non-429 error
                         consecutive_429s = 0
@@ -859,14 +1277,20 @@ class App(tb.Frame):
 
                         results_log.append((q, "success", filing_type))
                         count_success += 1
+                        
+                        # Increment direct request counter if not using proxy
+                        if not proxy_active:
+                            self._increment_direct_request()
 
                     processed_count += 1
+                    query_idx += 1
+                    queries_in_batch += 1
 
-                    if ip_rate_limited or stopped:
+                    if ip_rate_limited or stopped or need_new_session:
                         break
 
                     # Wait between queries (within batch) - interruptible with countdown
-                    if j < len(batch_queries) - 1 and wait_seconds > 0:
+                    if queries_in_batch < batch_size and query_idx < total_queries and wait_seconds > 0:
                         wait_completed = await self._interruptible_sleep(
                             wait_seconds,
                             f"({i}/{total_queries}) Waiting {{remaining}}...",
@@ -878,16 +1302,23 @@ class App(tb.Frame):
 
             # Session is now closed for this batch
 
-            # Batch wait before next batch (if not the last batch and not stopped) - interruptible
-            if batch_idx < len(batch_starts) - 1 and batch_wait_seconds > 0:
+            # Batch wait before next batch (skip if proxy is active or if we need new session for proxy switch)
+            if query_idx < total_queries and batch_wait_seconds > 0 and not need_new_session:
                 if not ip_rate_limited and not stopped and not self._stop_requested:
-                    wait_completed = await self._interruptible_sleep(
-                        batch_wait_seconds,
-                        f"Batch {batch_num} complete. {{remaining}} until next batch...",
-                        check_interval=1.0,
-                    )
-                    if not wait_completed:
-                        stopped = True
+                    if proxy_active:
+                        # Skip batch wait when proxy is active (rotation handles rate limits)
+                        self.master.after(0, lambda b=batch_num: self.var_status.set(
+                            f"Batch {b} complete. Skipping wait (proxy active)..."
+                        ))
+                    else:
+                        # Normal batch wait without proxy
+                        wait_completed = await self._interruptible_sleep(
+                            batch_wait_seconds,
+                            f"Batch {batch_num} complete. {{remaining}} until next batch...",
+                            check_interval=1.0,
+                        )
+                        if not wait_completed:
+                            stopped = True
 
         stem = _sanitize_filename_stem(base_name) or "results"
 

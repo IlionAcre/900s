@@ -51,6 +51,7 @@ queries copy.txt
 *.rar
 *.log
 *.json
+!config.json
 
 # Unused Python files (old/alternative implementations)
 scraper.py
@@ -89,3 +90,8 @@ mala.xml
 # Temporary files
 *.tmp
 __tmp_*
+# Bundling exclusions
+*.spec
+*.pyc
+.env
+

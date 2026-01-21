@@ -1,0 +1,15 @@
+{
+  "output_dir": "",
+  "queries_file": "",
+  "base_name": "results",
+  "wait_seconds": "0",
+  "batch_size": "45",
+  "batch_wait_minutes": "61",
+  "proxy_url": "",
+  "use_proxy": false,
+  "force_proxy": false,
+  "export_full": false,
+  "report_name": "report",
+  "direct_request_count": 40,
+  "direct_request_window_start": "2026-01-21T03:24:00"
+}

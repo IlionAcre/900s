@@ -1,0 +1,107 @@
+NONPROFIT FILING EXPORTER: USER GUIDE
+========================================
+
+------------------------------------------------------------
+MODE SELECTION (Top Section)
+------------------------------------------------------------
+
+Choose how you want to search:
+- SINGLE QUERY: For finding just one organization.
+- MULTI QUERY: For processing a long list of organizations automatically.
+
+------------------------------------------------------------
+SINGLE QUERY MODE
+------------------------------------------------------------
+
+- QUERY: Type the exact name or a keyword for the organization you want to find.
+- FOLDER: Where the finished spreadsheet will be saved. Click "Choose..." to pick a folder on your Mac.
+- WILL SAVE AS: Shows you exactly what the filename will be before you even start.
+- ALSO EXPORT FULL (UNCLEANED) FILE: 
+  By default, the tool only gives you the most important data. Check this box if you want a second "Full" spreadsheet containing every single piece of information found in the tax filings.
+
+------------------------------------------------------------
+MULTI QUERY (BATCH) MODE
+------------------------------------------------------------
+
+- QUERIES FILE: Select the text file (.txt) or spreadsheet (.csv) that contains your list of names.
+- FOLDER: Where all the results will be saved.
+- BASE NAME: Choose a name (like "Project_Alpha") to help you identify the files created from this list.
+- WAIT (SEC BETWEEN QUERIES): 
+  Standard is 0. If you get blocked by the website, increase this (try 5 or 10) to make the tool search more slowly.
+- BATCH:
+  - QUERIES: How many searches to do before taking a "coffee break".
+  - WAIT (MIN): How long the break should be (default is around 1 minute). 
+  These settings are essential for doing hundreds of searches without being blocked.
+- ALSO EXPORT FULL (UNCLEANED) FILES: 
+  Same as Single mode; gives you the "unfiltered" raw data in a separate file.
+- REPORT: 
+  The name of the summary file (like "Daily_Status") that tells you which searches succeeded and which failed.
+
+------------------------------------------------------------
+PROXY (Optional - Multi Query Only)
+------------------------------------------------------------
+
+- PROXY URL: 
+  Paste the full URL for your rotating proxy service here. This is usually provided by your proxy provider and contains authentication information.
+  Example: http://username:password@proxy.example.com:8080
+
+- USE PROXY (Auto-Switch): 
+  When checked:
+  - Starts with direct connection.
+  - Automatically switches to proxy if:
+    a) You hit 50 direct requests/hour.
+    b) You get 3 consecutive rate limit errors (429).
+    c) Single query gets a rate limit error.
+
+- FORCE PROXY (Always):
+  When checked, the tool uses the proxy immediately from the very first request. Useful if you know your IP is already blocked.
+
+- 3-STRIKE RULE (Automatic Protection):
+  If you get 3 consecutive rate limit errors on direct connection:
+  1. If proxy enabled -> Switches to proxy immediately.
+  2. If no proxy -> Waits 1 hour to cool down, then retries automatically.
+
+- AUTOMATIC FALLBACK:
+  If 5 consecutive rate limit errors occur even with proxy, the tool will disable the proxy and wait.
+
+------------------------------------------------------------
+REQUEST COUNTER (Rate Limiting)
+------------------------------------------------------------
+
+The app tracks how many direct (non-proxy) requests you make per hour.
+
+- DISPLAY: Shows "Direct: X/50 (resets in Xm)" in the bottom bar
+- LIMIT: 50 direct requests per hour (website rate limit)
+- AUTOMATIC RESET: Counter resets after 1 hour of no activity
+- PERSISTENT: Count is saved between sessions
+
+When you hit 50 requests:
+- If proxy is enabled: automatically switches to proxy
+- If no proxy: waits for the remaining time until the hour is up
+
+This helps you avoid being blocked by the website while maximizing your request speed.
+
+------------------------------------------------------------
+SETTINGS (Saved Automatically)
+------------------------------------------------------------
+
+All your settings (folder, proxy URL, wait times, etc.) are saved automatically when you close the app. Next time you open it, everything will be exactly as you left it.
+
+------------------------------------------------------------
+BOTTOM CONTROLS & STATUS
+------------------------------------------------------------
+
+- STATUS BAR (Bottom Left):
+  It tells you exactly what the tool is doing. If it's waiting, it will show a countdown (e.g., "Waiting 24s...") so you know precisely how much time is left.
+
+- RUN BUTTON: Starts the process.
+- STOP BUTTON: 
+  If you click this, the tool stops immediately. It will cancel any active waiting timers and immediately save all the organizations it has processed so far.
+
+------------------------------------------------------------
+THE RESULTS (Check your "data" folder)
+------------------------------------------------------------
+
+- Spreadsheet (_990.csv): Final data for standard nonprofits.
+- Spreadsheet (_990pf.csv): Final data for private foundations.
+- Summary Report: A simple list showing the result of every query in your batch.
